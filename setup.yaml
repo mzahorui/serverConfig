@@ -1,0 +1,187 @@
+---
+# PLAY 1: Root Tasks (Install Packages)
+- name: Setup My Dev Environment
+  hosts: vm_guest
+  become: true  # This means "run as sudo"
+
+  tasks:
+    - name: Install basic packages
+      apt:
+        name:
+          - git
+          - curl
+          - wget
+          - zsh
+          - docker.io
+          - gcc
+          - python3
+          - python3-venv
+          - unzip
+          - gzip
+          - tar
+          - trash-cli
+          - ripgrep
+          - build-essential
+          - keyboard-configuration
+          - console-setup
+        state: present
+        update_cache: yes
+
+    # - name: Ensure locale is generated
+    #   locale_gen:
+    #     name: en_US.UTF-8
+    #     state: present
+    #
+    # - name: Set default locale system-wide
+    #   command: localectl set-locale LANG=en_US.UTF-8
+
+    - name: Configure CapsLock as a second Control key
+      lineinfile:
+        path: /etc/default/keyboard
+        regexp: '^XKBOPTIONS='
+        line: 'XKBOPTIONS="ctrl:nocaps"'
+      register: keyboard_config
+
+    - name: Apply keyboard configuration (console)
+      command: setupcon
+      when: keyboard_config.changed
+
+    - name: Ensure /home/linuxbrew exists and is owned by the user
+      file:
+        path: /home/linuxbrew
+        state: directory
+        owner: "{{ ansible_user_id }}"
+        group: "{{ ansible_user_id }}"
+        mode: '0755'
+
+    - name: Change user shell to Zsh
+      ansible.builtin.user:
+        name: "{{ ansible_user_id }}" 
+        shell: /bin/zsh
+
+
+# PLAY 2: User Tasks (Dotfiles)
+# ==========================================
+# USER CONFIGURATION (Run as normal user)
+# ==========================================
+- name: Setup Dotfiles
+  hosts: localhost
+  connection: local
+  become: false
+
+  tasks:
+    - name: Clone Dotfiles Repository
+      ansible.builtin.git:
+        repo: 'git@github.com:mzahorui/dotfiles.git'
+        dest: "/home/{{ ansible_user_id }}/dotfiles"
+        accept_hostkey: yes
+        version: master
+        force: yes
+
+    - name: Check if Homebrew is already installed
+      stat:
+        path: /home/linuxbrew/.linuxbrew/bin/brew
+      register: brew_check
+
+    - name: Install Homebrew (Non-Interactive)
+      shell: |
+        NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+      when: not brew_check.stat.exists
+
+    - name: Configure Git Global Settings
+      community.general.git_config:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        scope: global
+      loop:
+        - { key: "user.name", value: "mzahorui" }
+        - { key: "user.email", value: "m42240222@gmail.com" }
+        - { key: "core.editor", value: "nvim" }
+
+    - name: Install Dev Tools via Homebrew
+      community.general.homebrew:
+        name:
+          - node
+          - universal-ctags
+          - neovim
+          - zoxide
+          - btop
+          - fd
+          - fzf
+          - tmux
+          - node
+          - rust
+        state: latest
+      environment:
+        PATH: "/home/linuxbrew/.linuxbrew/bin:{{ ansible_env.PATH }}"
+
+    - name: Tap jesseduffield/lazygit
+      community.general.homebrew_tap:
+        name: jesseduffield/lazygit
+      environment:
+        PATH: "/home/linuxbrew/.linuxbrew/bin:{{ ansible_env.PATH }}"
+
+    - name: Tap jesseduffield/lazydocker
+      community.general.homebrew_tap:
+        name: jesseduffield/lazydocker
+      environment:
+        PATH: "/home/linuxbrew/.linuxbrew/bin:{{ ansible_env.PATH }}"
+
+    - name: Install Lazy Tools
+      community.general.homebrew:
+        name:
+          - lazygit
+          - lazydocker
+        state: latest
+      environment:
+        PATH: "/home/linuxbrew/.linuxbrew/bin:{{ ansible_env.PATH }}"
+
+    - name: Create Config Directories
+      file:
+        path: "/home/{{ ansible_user_id }}/.config/{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - nvim
+        - tmux
+        # Add other folders if your config needs them (e.g. 'lazygit')
+
+    - name: Link Neovim Config
+      file:
+        src: "/home/{{ ansible_user_id }}/dotfiles/nvim"
+        dest: "/home/{{ ansible_user_id }}/.config/nvim"
+        state: link
+        force: yes
+      # 'force: yes' will delete the default init.lua if it exists and replace it
+
+    - name: Link Tmux Config
+      file:
+        src: "/home/{{ ansible_user_id }}/dotfiles/.tmux.conf"
+        dest: "/home/{{ ansible_user_id }}/.tmux.conf"
+        state: link
+        force: yes
+
+    - name: Link Zsh Config
+      file:
+        src: "/home/{{ ansible_user_id }}/dotfiles/.zshrc"
+        dest: "/home/{{ ansible_user_id }}/.zshrc"
+        state: link
+        force: yes
+
+    - name: Clone Oh My Zsh repository
+      ansible.builtin.git:
+        repo: 'https://github.com/ohmyzsh/ohmyzsh.git'
+        dest: "/home/{{ ansible_user_id }}/.oh-my-zsh"
+        depth: 1
+
+    - name: Install zsh-autosuggestions
+      ansible.builtin.git:
+        repo: 'https://github.com/zsh-users/zsh-autosuggestions.git'
+        dest: "/home/{{ ansible_user_id }}/.oh-my-zsh/custom/plugins/zsh-autosuggestions"
+        depth: 1
+
+    - name: Install zsh-fzf-history-search
+      ansible.builtin.git:
+        repo: 'https://github.com/joshskidmore/zsh-fzf-history-search.git'
+        dest: "/home/{{ ansible_user_id }}/.oh-my-zsh/custom/plugins/zsh-fzf-history-search"
+        depth: 1
