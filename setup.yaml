@@ -1,10 +1,42 @@
 ---
 # PLAY 1: Root Tasks (Install Packages)
 - name: Setup My Dev Environment
-  hosts: aurora
+  hosts: debian_vbox
   become: true  # This means "run as sudo"
 
   tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 0  # Force update even if it looks recent
+
+    - name: Install dependencies for Docker repo
+      apt:
+        name:
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+
+    - name: Create directory for apt keyrings
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+
+    - name: Download Docker GPG key
+      get_url:
+        url: https://download.docker.com/linux/debian/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: '0644'
+        force: true
+
+    - name: Add Docker Repository
+      apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian {{ ansible_distribution_release }} stable"
+        state: present
+        filename: docker
+
     - name: Install basic packages
       apt:
         name:
@@ -12,7 +44,10 @@
           - curl
           - wget
           - zsh
-          - docker.io
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose-plugin
           - gcc
           - python3
           - python3-venv
@@ -24,8 +59,10 @@
           - build-essential
           - jq
           - inxi
+          - sshfs
+          - docker-compose-plugin
+          - linux-headers-amd64
         state: present
-        update_cache: yes
 
     - name: Configure CapsLock as a second Control key
       lineinfile:
@@ -50,84 +87,42 @@
       ansible.builtin.user:
         name: "{{ ansible_user }}" 
         shell: /bin/zsh
-        groups: docker
+        groups:
+          - docker
         append: yes
 
-        # 1. Check if NVIDIA Hardware exists
-    - name: Check for NVIDIA GPU hardware
-      ansible.builtin.shell: "lspci | grep -i nvidia"
-      register: nvidia_hardware_check
-      ignore_errors: true
-      changed_when: false
-
-    # 2. Check if NVIDIA Driver is loaded (Optional but recommended)
-    - name: Check for NVIDIA Driver
-      ansible.builtin.command: nvidia-smi
-      register: nvidia_driver_check
-      ignore_errors: true
-      changed_when: false
-
-    # 3. Installation Block
-    - name: Install NVIDIA Container Toolkit
-      when: 
-        - nvidia_hardware_check.rc == 0
-        - nvidia_driver_check.rc == 0
-      block:
-        - name: Download NVIDIA GPG Key
-          ansible.builtin.get_url:
-            url: https://nvidia.github.io/libnvidia-container/gpgkey
-            dest: /usr/share/keyrings/nvidia-container-toolkit-keyring.asc
-            mode: '0644'
-
-        - name: Add NVIDIA Container Toolkit Repository
-          ansible.builtin.apt_repository:
-            # We map 'x86_64' (Ansible) to 'amd64' (Apt) explicitly
-            repo: >-
-              deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.asc] 
-              https://nvidia.github.io/libnvidia-container/stable/deb/{{ 'amd64' if ansible_architecture == 'x86_64' else 'arm64' }} /
-            filename: nvidia-container-toolkit
-            state: present
-
-        - name: Install nvidia-container-toolkit package
-          ansible.builtin.apt:
-            name: nvidia-container-toolkit
-            state: present
-            update_cache: yes
-
-        - name: Check for NVIDIA runtime in Docker config
-          ansible.builtin.shell: |
-            jq -e '.runtimes.nvidia' /etc/docker/daemon.json > /dev/null
-          register: nvidia_runtime_check
-          # Return code 0 means found (success), 1 means not found (failure)
-          ignore_errors: true
-          changed_when: false
-
-        - name: Apply NVIDIA Container Runtime Config
-          ansible.builtin.command: nvidia-ctk runtime configure --runtime=docker
-          when: nvidia_runtime_check.rc != 0
-          notify: Restart Docker
-
-  handlers:
-    - name: Restart Docker
-      ansible.builtin.service:
-        name: docker
-        state: restarted
 # PLAY 2: User Tasks (Dotfiles)
 # ==========================================
 # USER CONFIGURATION (Run as normal user)
 # ==========================================
 - name: Setup Dotfiles
-  hosts: aurora
+  hosts: debian_vbox
   become: false
 
   tasks:
+    - name: Configure Git Global Settings
+      community.general.git_config:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        scope: global
+      loop:
+        - { key: "user.name", value: "mzahorui" }
+        - { key: "user.email", value: "m42240222@gmail.com" }
+        - { key: "core.editor", value: "nvim" }
+
     - name: Clone Dotfiles Repository
       ansible.builtin.git:
         repo: 'git@github.com:mzahorui/dotfiles.git'
         dest: "/home/{{ ansible_user_id }}/dotfiles"
         accept_hostkey: yes
         version: master
-        force: yes
+
+    - name: Clone Inception Repository
+      ansible.builtin.git:
+        repo: 'git@github.com:mzahorui/inception.git'
+        dest: "/home/{{ ansible_user_id }}/Inception"
+        accept_hostkey: yes
+        version: master
 
     - name: Check if Homebrew is already installed
       stat:
@@ -139,30 +134,19 @@
         NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
       when: not brew_check.stat.exists
 
-    - name: Configure Git Global Settings
-      community.general.git_config:
-        name: "{{ item.key }}"
-        value: "{{ item.value }}"
-        scope: global
-      loop:
-        - { key: "user.name", value: "mzahorui" }
-        - { key: "user.email", value: "m42240222@gmail.com" }
-        - { key: "core.editor", value: "nvim" }
-
     - name: Install Dev Tools via Homebrew
       community.general.homebrew:
         name:
-          - node
           - universal-ctags
           - neovim
-          - ranger
+          - node
+          - yazi
           - zoxide
           - btop
           - fd
           - fzf
           - tmux
-          - node
-          - rust
+          - tmuxai
         state: latest
       environment:
         PATH: "/home/linuxbrew/.linuxbrew/bin:{{ ansible_env.PATH }}"
@@ -185,6 +169,40 @@
           - lazygit
           - lazydocker
         state: latest
+      environment:
+        PATH: "/home/linuxbrew/.linuxbrew/bin:{{ ansible_env.PATH }}"
+
+    - name: Tap anomalyco/tap
+      community.general.homebrew_tap:
+        name: anomalyco/tap
+      environment:
+        PATH: "/home/linuxbrew/.linuxbrew/bin:{{ ansible_env.PATH }}"
+
+    - name: Install OpenCode
+      community.general.homebrew:
+        name: opencode
+        state: latest
+      environment:
+        PATH: "/home/linuxbrew/.linuxbrew/bin:{{ ansible_env.PATH }}"
+
+    - name: Install NPM Global Packages (Gemini and Bitwarden CLI)
+      community.general.npm:
+        name: "{{ item }}"
+        global: yes
+        state: present
+      loop:
+        - "@google/gemini-cli"
+        - "@bitwarden/cli"
+      register: npm_install
+      environment:
+        PATH: "/home/linuxbrew/.linuxbrew/bin:{{ ansible_env.PATH }}"
+
+    - name: Configure Bitwarden CLI to use European Server
+      ansible.builtin.command: bw config server https://vault.bitwarden.eu
+      when: 
+        - item.item == "@bitwarden/cli"
+        - item is succeeded
+      loop: "{{ npm_install.results }}"
       environment:
         PATH: "/home/linuxbrew/.linuxbrew/bin:{{ ansible_env.PATH }}"
 
@@ -219,6 +237,12 @@
         dest: "/home/{{ ansible_user_id }}/.zshrc"
         state: link
         force: yes
+
+    - name: Install Tmux Plugin Manager
+      ansible.builtin.git:
+        repo: 'https://github.com/tmux-plugins/tpm'
+        dest: "/home/{{ ansible_user_id }}/.tmux/plugins/tpm"
+        depth: 1
 
     - name: Clone Oh My Zsh repository
       ansible.builtin.git:
