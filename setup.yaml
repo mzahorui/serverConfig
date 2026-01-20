@@ -117,13 +117,6 @@
         accept_hostkey: yes
         version: master
 
-    - name: Clone Inception Repository
-      ansible.builtin.git:
-        repo: 'git@github.com:mzahorui/inception.git'
-        dest: "/home/{{ ansible_user_id }}/Inception"
-        accept_hostkey: yes
-        version: master
-
     - name: Check if Homebrew is already installed
       stat:
         path: /home/linuxbrew/.linuxbrew/bin/brew
@@ -213,7 +206,6 @@
         mode: '0755'
       loop:
         - nvim
-        - tmux
         # Add other folders if your config needs them (e.g. 'lazygit')
 
     - name: Link Neovim Config
